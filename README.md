@@ -79,6 +79,24 @@ cmake -DCMAKE_INSTALL_PREFIX=/path/to/your/install/dir -DOKULAR_UI=desktop ..
 ```
 Available options are `desktop`, `mobile`, and `both`.
 
+### Native Windows build (.exe)
+
+This fork ships a GitHub Actions workflow,
+[`.github/workflows/windows-exe.yml`](.github/workflows/windows-exe.yml), that
+builds a directly-runnable native Windows `okular.exe` on every push and pull
+request.
+
+Two things make it fast and native compared to the upstream KDE Windows CI:
+
+* It enables Craft's **prebuilt binary cache**, so Qt and the KDE Frameworks are
+  downloaded already-compiled instead of being built from source. That turns the
+  2-3 hour "compile everything" pipeline into a build of only Okular itself.
+* It packages a standalone `okular.exe` / NSIS installer (`packageAppx = False`
+  in [`.craft.ini`](.craft.ini)) instead of a Microsoft-Store `.appx` bundle.
+
+The resulting `okular.exe` is published as the `okular-windows-exe` build
+artifact on each run (Actions tab → the run → Artifacts).
+
 ### clang-format
 
 The Okular project uses clang-format to enforce source code formatting.

@@ -1,0 +1,144 @@
+# SPDX-FileCopyrightText: None
+# SPDX-License-Identifier: CC0-1.0
+#
+# Native Windows build for this Okular fork.
+#
+# Why this exists
+# ---------------
+# The upstream KDE CI (.gitlab-ci.yml) builds Windows with Craft *from source*,
+# i.e. it compiles all of Qt and the KDE Frameworks every time. That is what
+# makes a fresh pipeline take 2-3 hours.
+#
+# This workflow does two things differently:
+#   1. It enables Craft's prebuilt BINARY CACHE, so Qt + KF6 + every other
+#      dependency is downloaded already-compiled from files.kde.org instead of
+#      being built locally. Only Okular itself is compiled -> minutes, not hours.
+#   2. It packages a standalone, directly-runnable okular.exe (plus an NSIS
+#      installer .exe), instead of the Microsoft-Store .appx bundle that the
+#      official build produces.
+#
+# The resulting okular.exe is uploaded as a build artifact on every push / PR.
+
+name: Windows (native exe)
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+# Cancel superseded runs on the same ref so PRs don't queue up behind old builds.
+concurrency:
+  group: windows-exe-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-windows-exe:
+    name: Build native okular.exe
+    runs-on: windows-latest
+
+    env:
+      # Where Craft installs itself and all dependencies.
+      CRAFT_ROOT: ${{ github.workspace }}\CraftRoot
+      # The Craft blueprint we are building.
+      CRAFT_TARGET: kde/applications/okular
+
+    steps:
+      - name: Checkout fork source
+        uses: actions/checkout@v4
+        with:
+          path: source
+          fetch-depth: 1
+
+      - name: Set up Python (required by Craft)
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Cache Craft download/work directories
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ env.CRAFT_ROOT }}\download
+            ${{ env.CRAFT_ROOT }}\binary
+          key: craft-${{ runner.os }}-${{ hashFiles('source/.kde-ci.yml', 'source/.craft.ini') }}
+          restore-keys: |
+            craft-${{ runner.os }}-
+
+      - name: Bootstrap Craft
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          # Fetch the Craft bootstrap script straight from KDE and install Craft
+          # non-interactively using the default MSVC x86_64 toolchain.
+          $bootstrap = "$Env:RUNNER_TEMP\CraftBootstrap.py"
+          Invoke-WebRequest -UseBasicParsing `
+            -Uri "https://raw.githubusercontent.com/KDE/craft/master/setup/CraftBootstrap.py" `
+            -OutFile $bootstrap
+          python $bootstrap --prefix "$Env:CRAFT_ROOT" --ignore-installed --use-defaults
+
+      - name: Enable Craft binary cache (skip building Qt/KF6 from source)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          . "$Env:CRAFT_ROOT\craft\craftenv.ps1"
+          # Pull precompiled dependency packages instead of compiling them.
+          craft --set "[Packager]UseCache=True"
+          craft --set "[Packager]CreateCache=False"
+          # CI/CD mode: non-interactive, fail fast.
+          craft --set "[ContinuousIntegration]Enabled=True"
+
+      - name: Install Okular dependencies (from binary cache)
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          . "$Env:CRAFT_ROOT\craft\craftenv.ps1"
+          # --install-deps pulls every dependency of Okular as a prebuilt package.
+          craft --install-deps $Env:CRAFT_TARGET
+
+      - name: Build Okular from this checkout
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          . "$Env:CRAFT_ROOT\craft\craftenv.ps1"
+          # --src-dir makes Craft compile *our* source tree (the PR), not upstream.
+          # --no-cache so the fork's code is always rebuilt, deps stay cached.
+          craft --no-cache --src-dir "$Env:GITHUB_WORKSPACE\source" $Env:CRAFT_TARGET
+
+      - name: Package standalone .exe installer
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          . "$Env:CRAFT_ROOT\craft\craftenv.ps1"
+          # With packageAppx=False (see .craft.ini) this emits a native NSIS
+          # installer .exe rather than a Store .appx bundle.
+          craft --no-cache --src-dir "$Env:GITHUB_WORKSPACE\source" --package $Env:CRAFT_TARGET
+
+      - name: Collect build outputs
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          New-Item -ItemType Directory -Force -Path "$Env:GITHUB_WORKSPACE\artifacts" | Out-Null
+
+          # The directly-runnable okular.exe produced by the build.
+          $okularExe = Get-ChildItem -Path "$Env:CRAFT_ROOT" -Recurse -Filter "okular.exe" -ErrorAction SilentlyContinue | Select-Object -First 1
+          if ($okularExe) {
+            Write-Host "Found native executable: $($okularExe.FullName)"
+            Copy-Item $okularExe.FullName "$Env:GITHUB_WORKSPACE\artifacts\"
+          } else {
+            Write-Warning "okular.exe was not found under $Env:CRAFT_ROOT"
+          }
+
+          # The packaged installer / portable archives, if any.
+          Get-ChildItem -Path "$Env:CRAFT_ROOT\tmp" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Extension -in ".exe", ".7z", ".zip" } |
+            ForEach-Object { Copy-Item $_.FullName "$Env:GITHUB_WORKSPACE\artifacts\" }
+
+          Get-ChildItem "$Env:GITHUB_WORKSPACE\artifacts"
+
+      - name: Upload native okular.exe artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: okular-windows-exe
+          path: artifacts/**
+          if-no-files-found: warn
