@@ -75,26 +75,20 @@ jobs:
           Invoke-WebRequest -UseBasicParsing `
             -Uri "https://raw.githubusercontent.com/KDE/craft/master/setup/CraftBootstrap.py" `
             -OutFile $bootstrap
-          python $bootstrap --prefix "$Env:CRAFT_ROOT" --ignore-installed --use-defaults
+          # The bootstrap already points [Packager]RepositoryUrl at the KDE
+          # prebuilt binary cache (https://files.kde.org/craft/Qt6/), so no
+          # extra cache configuration step is needed.
+          python $bootstrap --prefix "$Env:CRAFT_ROOT" --use-defaults
 
-      - name: Enable Craft binary cache (skip building Qt/KF6 from source)
+      - name: Install Okular dependencies (from prebuilt binary cache)
         shell: pwsh
         run: |
           $ErrorActionPreference = "Stop"
           . "$Env:CRAFT_ROOT\craft\craftenv.ps1"
-          # Pull precompiled dependency packages instead of compiling them.
-          craft --set "[Packager]UseCache=True"
-          craft --set "[Packager]CreateCache=False"
-          # CI/CD mode: non-interactive, fail fast.
-          craft --set "[ContinuousIntegration]Enabled=True"
-
-      - name: Install Okular dependencies (from binary cache)
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = "Stop"
-          . "$Env:CRAFT_ROOT\craft\craftenv.ps1"
-          # --install-deps pulls every dependency of Okular as a prebuilt package.
-          craft --install-deps $Env:CRAFT_TARGET
+          # --install-deps pulls every dependency of Okular; --use-cache fetches
+          # them already-compiled from files.kde.org instead of building Qt/KF6
+          # from source. --ci-mode keeps everything non-interactive.
+          craft --ci-mode --use-cache --install-deps $Env:CRAFT_TARGET
 
       - name: Build Okular from this checkout
         shell: pwsh
@@ -103,7 +97,7 @@ jobs:
           . "$Env:CRAFT_ROOT\craft\craftenv.ps1"
           # --src-dir makes Craft compile *our* source tree (the PR), not upstream.
           # --no-cache so the fork's code is always rebuilt, deps stay cached.
-          craft --no-cache --src-dir "$Env:GITHUB_WORKSPACE\source" $Env:CRAFT_TARGET
+          craft --ci-mode --no-cache --src-dir "$Env:GITHUB_WORKSPACE\source" $Env:CRAFT_TARGET
 
       - name: Package standalone .exe installer
         shell: pwsh
@@ -112,7 +106,7 @@ jobs:
           . "$Env:CRAFT_ROOT\craft\craftenv.ps1"
           # With packageAppx=False (see .craft.ini) this emits a native NSIS
           # installer .exe rather than a Store .appx bundle.
-          craft --no-cache --src-dir "$Env:GITHUB_WORKSPACE\source" --package $Env:CRAFT_TARGET
+          craft --ci-mode --no-cache --src-dir "$Env:GITHUB_WORKSPACE\source" --package $Env:CRAFT_TARGET
 
       - name: Collect build outputs
         shell: pwsh
